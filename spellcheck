@@ -50,11 +50,13 @@ EOF
       'miss' =>
         sub {
           my $indent = ' ' x $r->{'offset'};
+	  local $" = "\n\t";
           print <<EOF;
 Near miss on term "$r->{'term'}" in:
 "$line"
 $indent^
-missed terms: $r->{'misses'}
+missed terms:
+	@{$r->{'misses'}}
 
 EOF
         },
@@ -62,12 +64,15 @@ EOF
       'guess' =>
         sub {
           my $indent = ' ' x $r->{'offset'};
+	  local $" = "\n\t";
           print <<EOF;
 Guess on term "$r->{'term'}" in:
 "$line"
 $indent^
-missed terms: $r->{'misses'}
-guesses: $r->{'guesses'}
+missed terms:
+	@{$r->{'misses'}}
+guesses:
+	@{$r->{'guesses'}}
 
 EOF
         },

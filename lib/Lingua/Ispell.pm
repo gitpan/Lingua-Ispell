@@ -41,7 +41,7 @@ use Carp;
 use strict;
 
 use vars qw( $VERSION );
-$VERSION = '0.05';
+$VERSION = '0.06';
 
 
 =head1 SYNOPSIS
@@ -91,7 +91,7 @@ For the type 'root', an additional hash entry is present: 'root'.
 Its value is the word which ispell identified in the dictionary
 as being the likely root of the current term.
 For the type 'miss', an additional hash entry is present: 'misses'.
-Its value is a string of words, comma-separated, which ispell
+Its value is an ref to an array of words which ispell
 identified as being "near-misses" of the current term, when
 scanning the dictionary.
 
@@ -111,12 +111,12 @@ A quickie example:
    elsif ( $r->{'type'} eq 'miss' ) {
      # as in the case of 'perl'
      print "'$r->{'term'}' was not found in the dictionary;\n";
-     print "Near misses: $r->{'misses'}\n";
+     print "Near misses: @{$r->{'misses'}}\n";
    }
    elsif ( $r->{'type'} eq 'guess' ) {
      # as in the case of 'salmoning'
      print "'$r->{'term'}' was not found in the dictionary;\n";
-     print "Root/affix Guesses: $r->{'guesses'}\n";
+     print "Root/affix Guesses: @{$r->{'guesses'}}\n";
    }
    elsif ( $r->{'type'} eq 'compound' ) {
      # as in the case of 'fruithammer'
@@ -159,10 +159,10 @@ sub _init {
     my @options;
     while ( my( $k, $ar ) = each %Lingua::Ispell::options ) {
       if ( @$ar ) {
-	for ( @$ar ) {
+        for ( @$ar ) {
           #push @options, "$k $_";
           push @options, $k, $_;
-	}
+        }
       }
       else {
         push @options, $k;
@@ -251,37 +251,51 @@ sub spellcheck {
         $h->{'original'} = shift;
         $h->{'count'} = shift; # count will always be 0, when $c eq '?'.
         $h->{'offset'} = shift;
-        $h->{'offset'} =~ s/:$//; # offset has trailing colon.
+#        $h->{'offset'} =~ s/:$//; # offset has trailing colon.
 
-        my @misses = map { s/,$//; $_ } splice @_, 0, $h->{'count'};
-        my @guesses = map { s/,$//; $_ } @_;
-        $h->{'misses'} = join ' ', @misses;
-        $h->{'guesses'} = join ' ', @guesses;
+        my @misses  = # map { s/,$//; $_ } 
+	              splice @_, 0, $h->{'count'};
+        my @guesses = # map { s/,$//; $_ }
+	              @_;
+
+##
+## these should be changed to be arrays:
+##
+        $h->{'misses'}  = \@misses;
+        $h->{'guesses'} = \@guesses;
       },
   );
-  $modisp{'guess'} = $modisp{'miss'};
+  $modisp{'guess'} = $modisp{'miss'}; # same handler.
 
   my @results;
-    for my $i ( 0 .. $#commentary ) {
-      my %h = (
-        'term' => $terms[$i],
-        'commentary' => $commentary[$i],
-      );
-      my( $c, @args ) = split ' ', $h{'commentary'};
-  
-      my $type = $types{$c} || 'unknown';
+  for my $i ( 0 .. $#commentary ) {
+    my %h = (
+      'term' => $terms[$i],
+      'commentary' => $commentary[$i],
+    );
 
-      $modisp{$type} and $modisp{$type}->( \%h, @args );
+    my @tail; # will get stuff after a colon, if any.
 
-      if ( $Lingua::Ispell::terse && $h{'offset'} ) {
-        # need to recalculate the 'term':
-        my @terms = grep { /\D/ } split /$split_pattern/, substr $line, $h{'offset'}-1;
-	$h{'term'} = $terms[0];
-      }
-
-      $h{'type'} = $type;
-      push @results, \%h;
+    if ( $h{'commentary'} =~ s/:\s+(.*)// ) {
+      my $tail = $1;
+      @tail = split /,\s+/, $tail;
     }
+
+    my( $c, @args ) = split ' ', $h{'commentary'};
+  
+    my $type = $types{$c} || 'unknown';
+
+    $modisp{$type} and $modisp{$type}->( \%h, @args, @tail );
+
+    if ( $Lingua::Ispell::terse && $h{'offset'} ) {
+      # need to recalculate the 'term':
+      my @terms = grep { /\D/ } split /$split_pattern/, substr $line, $h{'offset'}-1;
+      $h{'term'} = $terms[0];
+    }
+
+    $h{'type'} = $type;
+    push @results, \%h;
+  }
 
   @results
 }
@@ -546,6 +560,8 @@ IPC::Open2, and Carp.
 =head1 AUTHOR
 
 jdporter@min.net (John Porter)
+
+=head1 COPYRIGHT
 
 This module is free software; you may redistribute it and/or
 modify it under the same terms as Perl itself.
