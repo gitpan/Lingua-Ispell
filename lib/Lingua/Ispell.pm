@@ -9,6 +9,37 @@ Note: this module was previously known as Text::Ispell; if you have
 Text::Ispell installed on your system, it is now obsolete and should be
 replaced by Lingua::Ispell.
 
+=head1 NOTA BENE
+
+ispell, when reporting on misspelled words, indicates the string it was unable
+to verify, as well as its starting offset in the input line.
+No such information is returned for words which are deemed to be correctly spelled.
+For example, in a line like "Can't buy a thrill", ispell simply reports that the
+line contained four correctly spelled words.  
+
+Lingua::Ispell would like to identify which substrings of the input
+line are words -- correctly spelled or otherwise.  It used to attempt to split
+the input line into words according to the same rules ispell uses; but that has
+proven to be very difficult, resulting in both slow and error-prone code.
+
+=head2 Consequences
+
+Lingua::Ispell now operates only in "terse" mode.
+In this mode, only misspelled words are reported.
+Words which ispell verifies as correctly spelled are silently accepted.
+
+In the report structures returned by C<spellcheck()>, the C<'term'> member
+is now always identical to the C<'original'> member; of the two, you should 
+probably use the C<'term'> member.  (Also consider the C<'offset'> member.)
+ispell does not report this information for correctly spelled words; if at
+some point in the future this capability is added to ispell, Lingua::Ispell
+will be updated to take advantage of it.
+
+Use of the C<$word_chars> variable has been removed; setting it no longer
+has any effect.
+
+C<terse_mode()> now does nothing.
+
 =cut
 
 
@@ -23,11 +54,10 @@ use Exporter;
   parse_according_to
   set_params_by_language
   save_dictionary
-  terse_mode
   allow_compounds
   make_wild_guesses
-  use_dictionaries
-  use_personal_dictionaries
+  use_dictionary
+  use_personal_dictionary
 );
 %Lingua::Ispell::EXPORT_TAGS = (
   'all' => \@Lingua::Ispell::EXPORT_OK,
@@ -41,7 +71,7 @@ use Carp;
 use strict;
 
 use vars qw( $VERSION );
-$VERSION = '0.06';
+$VERSION = '0.07';
 
 
 =head1 SYNOPSIS
@@ -66,20 +96,14 @@ Lingua::Ispell::spellcheck() takes one argument.  It must be a
 string, and it should contain only printable characters.
 One allowable exception is a terminal newline, which will be
 chomped off anyway.  The line is fed to a coprocess running
-ispell for analysis.  The line is parsed on non-wordchars
-into a sequence of terms.  By default, the set of wordchars
-is defined in ispell as letters, digits, and the apostrophe.
-In other words, the line is subjected the equivalent of
-
-  split /[^a-zA-Z0-9']+/
-
-(ispell has a means to add characters to the default set,
-but currently Lingua::Ispell does not provide access to that
-feature.)
+ispell for analysis.  ispell parses the line into "terms"
+according to the language-specific rules in effect.
 
 The result of ispell's analysis of each term is a categorization
-of the term into one of six types: ok, root, miss, none, compound,
+of the term into one of six types: ok, compound, root, miss, none,
 and guess.  Some of these carry additional information.
+The first three types are "correctly" spelled terms, and the last
+three are for "incorrectly" spelled terms.
 
 Lingua::Ispell::spellcheck returns a list of objects, each
 corresponding to a term in the spellchecked string.  Each object
@@ -95,7 +119,11 @@ Its value is an ref to an array of words which ispell
 identified as being "near-misses" of the current term, when
 scanning the dictionary.
 
-A quickie example:
+=head2 NOTE
+
+As mentioned above, C<Lingua::Ispell::spellcheck()> currently only reports on misspelled terms.
+
+=head2 EXAMPLE
 
  use Lingua::Ispell qw( spellcheck );
  Lingua::Ispell::allow_compounds(1);
@@ -182,9 +210,17 @@ sub _init {
 
     my $hdr = scalar(<Reader>);
 
-    $Lingua::Ispell::terse = 0;  # must be the same as ispell.
-    $Lingua::Ispell::word_chars = "'0-9A-Za-z";
+    # must be the same as ispell:
+    $Lingua::Ispell::terse = 0;
+    {
+      # set up permanent terse mode:
+      local $/ = "\n";
+      local $\ = '';
+      print Writer "!\n";
+      $Lingua::Ispell::terse = 1;
+    }
   }
+
   $Lingua::Ispell::pid
 }
 
@@ -214,21 +250,13 @@ sub spellcheck {
     push @commentary, $_;
   }
 
-#
-# it doth appear that ispell simply skips, without comment,
-# any terms that consist solely of digits.
-#
-  my $split_pattern = "[^$Lingua::Ispell::word_chars]+";
-  my @terms = grep { /\D/ } split /$split_pattern/, $line;
-
-  unless ( $Lingua::Ispell::terse ) {
-    @terms == @commentary or die "terms: ".join(',',@terms)."\ncommentary:\n".join("\n",@commentary)."\n\n";
-  }
-
   my %types = (
+    # correct words:
     '*' => 'ok',
     '-' => 'compound',
     '+' => 'root',
+
+    # misspelled words:
     '#' => 'none',
     '&' => 'miss',
     '?' => 'guess',
@@ -246,21 +274,15 @@ sub spellcheck {
         $h->{'original'} = shift;
         $h->{'offset'} = shift;
       },
-      'miss' => sub {
+      'miss' => sub { # also used for 'guess'
         my $h = shift;
         $h->{'original'} = shift;
         $h->{'count'} = shift; # count will always be 0, when $c eq '?'.
         $h->{'offset'} = shift;
-#        $h->{'offset'} =~ s/:$//; # offset has trailing colon.
 
-        my @misses  = # map { s/,$//; $_ } 
-	              splice @_, 0, $h->{'count'};
-        my @guesses = # map { s/,$//; $_ }
-	              @_;
+        my @misses  = splice @_, 0, $h->{'count'};
+        my @guesses = @_;
 
-##
-## these should be changed to be arrays:
-##
         $h->{'misses'}  = \@misses;
         $h->{'guesses'} = \@guesses;
       },
@@ -270,7 +292,6 @@ sub spellcheck {
   my @results;
   for my $i ( 0 .. $#commentary ) {
     my %h = (
-      'term' => $terms[$i],
       'commentary' => $commentary[$i],
     );
 
@@ -278,7 +299,7 @@ sub spellcheck {
 
     if ( $h{'commentary'} =~ s/:\s+(.*)// ) {
       my $tail = $1;
-      @tail = split /,\s+/, $tail;
+      @tail = split /, /, $tail;
     }
 
     my( $c, @args ) = split ' ', $h{'commentary'};
@@ -287,13 +308,9 @@ sub spellcheck {
 
     $modisp{$type} and $modisp{$type}->( \%h, @args, @tail );
 
-    if ( $Lingua::Ispell::terse && $h{'offset'} ) {
-      # need to recalculate the 'term':
-      my @terms = grep { /\D/ } split /$split_pattern/, substr $line, $h{'offset'}-1;
-      $h{'term'} = $terms[0];
-    }
-
     $h{'type'} = $type;
+    $h{'term'} = $h{'original'};
+
     push @results, \%h;
   }
 
@@ -389,20 +406,20 @@ sub save_dictionary() {
 
 =head2 terse_mode(bool:terse)
 
+I<B<NOTE:> This function has been disabled! 
+Lingua::Ispell now always operates in terse mode.>
+
 In terse mode, ispell will not produce reports for "correct" words.
 This means that the calling program will not receive results of the
 types 'ok', 'root', and 'compound'.
 
-ispell starts up in NON-terse mode, i.e. reports are produced for
-all terms, not just "incorrect" ones.
-
 =cut
 
 sub terse_mode($) {
-  my $bool = shift;
-  my $cmd = $bool ?  "\!" : "\%";
-  _send_command $cmd, '';
-  $Lingua::Ispell::terse = $bool;
+#  my $bool = shift;
+#  my $cmd = $bool ?  "\!" : "\%";
+#  _send_command $cmd, '';
+#  $Lingua::Ispell::terse = $bool;
 }
 
 
@@ -491,7 +508,7 @@ If no argument is given, the default dictionary will be used.
 
 =cut
 
-sub use_dictionary($) {
+sub use_dictionary {
   _exit();
   if ( @_ ) {
     $Lingua::Ispell::options{'-d'} = [ @_ ];
@@ -518,7 +535,7 @@ dictionary will be used.
 
 =cut
 
-sub use_personal_dictionary($) {
+sub use_personal_dictionary {
   _exit();
   if ( @_ ) {
     $Lingua::Ispell::options{'-p'} = [ @_ ];
@@ -538,7 +555,7 @@ sub use_personal_dictionary($) {
 ispell options:
 
   -w chars
-       Specify additional characters that can be part of a word.
+         Specify additional characters that can be part of a word.
 
 =head1 DEPENDENCIES
 
